@@ -1,0 +1,75 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 如果仓库根目录有 .zip，自动解压到仓库里，再删掉 zip 并提交
+      - name: 自动解压上传的 zip
+        run: |
+          shopt -s nullglob
+          zips=(*.zip)
+          if [ ${#zips[@]} -gt 0 ]; then
+            for z in "${zips[@]}"; do
+              rm -rf _unz && mkdir _unz
+              unzip -q -o "$z" -d _unz
+              top=(_unz/*)
+              if [ ${#top[@]} -eq 1 ] && [ -d "${top[0]}" ] && [ ! -f _unz/settings.gradle ]; then
+                cp -a "${top[0]}"/. .
+              else
+                cp -a _unz/. .
+              fi
+              rm -rf _unz "$z"
+            done
+            git config user.name "github-actions"
+            git config user.email "github-actions@users.noreply.github.com"
+            git add -A
+            git commit -m "自动解压上传的项目 zip"
+            git push
+          fi
+
+      - name: 检查项目文件是否存在
+        id: chk
+        run: |
+          if [ -f settings.gradle ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "还没有项目文件，先跳过编译（上传 zip 后会自动编译）"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-java@v4
+        if: steps.chk.outputs.ready == 'true'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.chk.outputs.ready == 'true'
+        with:
+          gradle-version: '8.9'
+
+      - name: 编译 APK
+        if: steps.chk.outputs.ready == 'true'
+        run: gradle assembleDebug --no-daemon --stacktrace
+
+      - name: 整理 APK
+        if: steps.chk.outputs.ready == 'true'
+        run: cp app/build/outputs/apk/debug/app-debug.apk EmbedHost.apk
+
+      - name: 发布到 Releases
+        if: steps.chk.outputs.ready == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: host-${{ github.run_number }}
+          name: Embed Host 构建 ${{ github.run_number }}
+          files: EmbedHost.apk
